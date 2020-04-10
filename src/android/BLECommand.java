@@ -1,5 +1,7 @@
 package com.megster.cordova.ble.central;
 
+import android.bluetooth.BluetoothGattDescriptor;
+
 import org.apache.cordova.CallbackContext;
 
 import java.util.UUID;
@@ -14,12 +16,14 @@ class BLECommand {
     public static int REGISTER_NOTIFY = 10001;
     public static int REMOVE_NOTIFY = 10002;
     public static int READ_RSSI = 10003;
+    public static int READ_DESCRIPTOR = 10004;
     // BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
     // BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
 
     private CallbackContext callbackContext;
     private UUID serviceUUID;
     private UUID characteristicUUID;
+    private BluetoothGattDescriptor descriptor;
     private byte[] data;
     private int type;
 
@@ -39,6 +43,12 @@ class BLECommand {
         this.type = type;
     }
 
+    public BLECommand(CallbackContext callbackContext, BluetoothGattDescriptor descriptor, int type) {
+        this.callbackContext = callbackContext;
+        this.descriptor = descriptor;
+        this.type = type;
+    }
+
     public int getType() {
         return type;
     }
@@ -53,6 +63,10 @@ class BLECommand {
 
     public UUID getCharacteristicUUID() {
         return characteristicUUID;
+    }
+
+    public BluetoothGattDescriptor getDescriptor() {
+        return descriptor;
     }
 
     public byte[] getData() {

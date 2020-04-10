@@ -52,6 +52,7 @@ public class Peripheral extends BluetoothGattCallback {
     private boolean connecting = false;
     private ConcurrentLinkedQueue<BLECommand> commandQueue = new ConcurrentLinkedQueue<BLECommand>();
     private boolean bleProcessing;
+    private int numberOfDescriptorsToRead = 0;
 
     BluetoothGatt gatt;
 
@@ -294,7 +295,8 @@ public class Peripheral extends BluetoothGattCallback {
                         for (BluetoothGattDescriptor descriptor: characteristic.getDescriptors()) {
                             JSONObject descriptorJSON = new JSONObject();
                             descriptorJSON.put("uuid", UUIDHelper.uuidToString(descriptor.getUuid()));
-                            descriptorJSON.put("value", descriptor.getValue()); // always blank
+                            // since we read the descriptors before, the values should be ready now
+                            descriptorJSON.put("value", byteArrayToJSON(descriptor.getValue()));
 
                             if (descriptor.getPermissions() > 0) {
                                 descriptorJSON.put("permissions", Helper.decodePermissions(descriptor));
@@ -334,6 +336,18 @@ public class Peripheral extends BluetoothGattCallback {
         return device;
     }
 
+    private void returnConnectResult() {
+        LOG.d(TAG, "Returning result after connect");
+        PluginResult result = new PluginResult(PluginResult.Status.OK, this.asJSONObject(gatt));
+        result.setKeepCallback(true);
+        if (refreshCallback != null) {
+            refreshCallback.sendPluginResult(result);
+            refreshCallback = null;
+        } else {
+            connectCallback.sendPluginResult(result);
+        }
+    }
+
     @Override
     public void onServicesDiscovered(BluetoothGatt gatt, int status) {
         super.onServicesDiscovered(gatt, status);
@@ -342,13 +356,28 @@ public class Peripheral extends BluetoothGattCallback {
         // overrides the connect callback. Unfortunately this edge case make the code confusing.
 
         if (status == BluetoothGatt.GATT_SUCCESS) {
-            PluginResult result = new PluginResult(PluginResult.Status.OK, this.asJSONObject(gatt));
-            result.setKeepCallback(true);
-            if (refreshCallback != null) {
-                refreshCallback.sendPluginResult(result);
-                refreshCallback = null;
-            } else {
-                connectCallback.sendPluginResult(result);
+
+            // queue the read all the descriptors
+            this.numberOfDescriptorsToRead = 0;
+            for (BluetoothGattService service : gatt.getServices()) {
+                for (BluetoothGattCharacteristic characteristic : service.getCharacteristics()) {
+                    // get all the descriptors, store their count, queue read for all of them
+                    List<BluetoothGattDescriptor> descriptors = characteristic.getDescriptors();
+                    this.numberOfDescriptorsToRead += descriptors.size();
+
+                    for (BluetoothGattDescriptor descriptor: descriptors) {
+                        if (refreshCallback != null) {
+                            queueReadDescriptor(refreshCallback, descriptor);
+                        } else {
+                            queueReadDescriptor(connectCallback, descriptor);
+                        }
+                    }
+                }
+            }
+
+            // in case of no descriptors to read, just return the result
+            if (this.numberOfDescriptorsToRead == 0) {
+                returnConnectResult();
             }
         } else {
             LOG.e(TAG, "Service discovery failed. status = %d", status);
@@ -439,6 +468,36 @@ public class Peripheral extends BluetoothGattCallback {
         super.onDescriptorWrite(gatt, descriptor, status);
         LOG.d(TAG, "onDescriptorWrite %s", descriptor);
         commandCompleted();
+    }
+
+    @Override
+    public void onDescriptorRead(BluetoothGatt gatt, BluetoothGattDescriptor descriptor, int status) {
+        super.onDescriptorRead(gatt, descriptor, status);
+        this.numberOfDescriptorsToRead--;
+        LOG.d(TAG, "onDescriptorRead: " + descriptor.getUuid() + " remaining: " + this.numberOfDescriptorsToRead);
+
+        // @note: do this only when reading descriptors after connect, not normally!
+        if (this.numberOfDescriptorsToRead == 0) {
+            returnConnectResult();
+        }
+
+        commandCompleted();
+
+        // @note: use this if it's required to create a public cordova function to read individual
+        // descriptors
+//        synchronized(this) {
+//            if (readDescriptorCallback != null) {
+//                if (status == BluetoothGatt.GATT_SUCCESS) {
+//                    readDescriptorCallback.success(descriptor.getValue());
+//                } else {
+//                    readDescriptorCallback.error("Error reading descriptor " + descriptor.getUuid() + " status=" + status);
+//                }
+//
+//                readDescriptorCallback = null;
+//            }
+//        }
+//
+//        commandCompleted();
     }
 
 
@@ -658,6 +717,34 @@ public class Peripheral extends BluetoothGattCallback {
 
     }
 
+
+    private void readDescriptor(CallbackContext callbackContext, BluetoothGattDescriptor descriptor) {
+
+        boolean success = false;
+
+        if (gatt == null) {
+            callbackContext.error("BluetoothGatt is null");
+            return;
+        }
+
+        synchronized(this) {
+            // @todo: in case we wanted to read from a separate cordova method, we would need to store the callbackContext to some readDescriptorCallback
+//            readDescriptorCallback = callbackContext;
+
+            if (gatt.readDescriptor(descriptor)) {
+                success = true;
+            } else {
+//                readDescriptorCallback = null;
+                callbackContext.error("Read RSSI failed");
+            }
+        }
+
+        if (!success) {
+            commandCompleted();
+        }
+
+    }
+
     // Some peripherals re-use UUIDs for multiple characteristics so we need to check the properties
     // and UUID of all characteristics instead of using service.getCharacteristic(characteristicUUID)
     private BluetoothGattCharacteristic findReadableCharacteristic(BluetoothGattService service, UUID characteristicUUID) {
@@ -775,6 +862,11 @@ public class Peripheral extends BluetoothGattCallback {
         queueCommand(command);
     }
 
+    public void queueReadDescriptor(CallbackContext callbackContext, BluetoothGattDescriptor descriptor) {
+        BLECommand command = new BLECommand(callbackContext, descriptor, BLECommand.READ_DESCRIPTOR);
+        queueCommand(command);
+    }
+
     public void queueCleanup() {
         bleProcessing = false;
         for (BLECommand command = commandQueue.poll(); command != null; command = commandQueue.poll()) {
@@ -850,6 +942,10 @@ public class Peripheral extends BluetoothGattCallback {
                 LOG.d(TAG,"Read RSSI");
                 bleProcessing = true;
                 readRSSI(command.getCallbackContext());
+            } else if (command.getType() == BLECommand.READ_DESCRIPTOR) {
+                LOG.d(TAG,"Read Descriptor");
+                bleProcessing = true;
+                readDescriptor(command.getCallbackContext(), command.getDescriptor());
             } else {
                 // this shouldn't happen
                 throw new RuntimeException("Unexpected BLE Command type " + command.getType());
