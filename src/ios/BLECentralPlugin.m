@@ -552,9 +552,14 @@
     // save the services to tell when all characteristics have been discovered
     NSMutableSet *servicesForPeriperal = [NSMutableSet new];
     [servicesForPeriperal addObjectsFromArray:peripheral.services];
-    [connectCallbackLatches setObject:servicesForPeriperal forKey:[peripheral uuidAsString]];
+
+    // we need to remember which characteristics and descriptors have already been discovered and which descriptors have been read - so that we know when the whole
+    // discovery process ends
+    NSMutableDictionary *servicesToProcess = [NSMutableDictionary dictionary];
+    [connectCallbackLatches setObject:servicesToProcess forKey:[peripheral uuidAsString]];
 
     for (CBService *service in peripheral.services) {
+        [servicesToProcess setObject:[NSMutableDictionary dictionary] forKey: service.UUID];
         [peripheral discoverCharacteristics:nil forService:service]; // discover all is slow
     }
 }
@@ -563,29 +568,75 @@
     NSLog(@"didDiscoverCharacteristicsForService");
 
     NSString *peripheralUUIDString = [peripheral uuidAsString];
-    NSString *connectCallbackId = [connectCallbacks valueForKey:peripheralUUIDString];
-    NSMutableSet *latch = [connectCallbackLatches valueForKey:peripheralUUIDString];
-
-    [latch removeObject:service];
-
-    if ([latch count] == 0) {
-        // Call success callback for connect
-        if (connectCallbackId) {
-            CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:[peripheral asDictionary]];
-            [pluginResult setKeepCallbackAsBool:TRUE];
-            [self.commandDelegate sendPluginResult:pluginResult callbackId:connectCallbackId];
-        }
-        [connectCallbackLatches removeObjectForKey:peripheralUUIDString];
-    }
+    NSMutableDictionary *servicesToProcess = [connectCallbackLatches valueForKey:peripheralUUIDString];
+    NSMutableDictionary *thisServiceToProcess = [servicesToProcess objectForKey:service.UUID];
 
     NSLog(@"Found characteristics for service %@", service);
     for (CBCharacteristic *characteristic in service.characteristics) {
-        NSLog(@"Characteristic %@", characteristic);
+        NSLog(@"Discovering descriptors for characteristic %@", characteristic);
+        [thisServiceToProcess setObject:[NSMutableDictionary dictionary] forKey: characteristic.UUID];
+        [peripheral discoverDescriptorsForCharacteristic:characteristic];
     }
 }
 
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    NSLog(@"didDiscoverDescriptorsForCharacteristicc %@", characteristic);
+    NSLog(@"Descriptors: %@", characteristic.descriptors);
+
+    NSString *peripheralUUIDString = [peripheral uuidAsString];
+    NSMutableDictionary *servicesToProcess = [connectCallbackLatches valueForKey:peripheralUUIDString];
+    NSMutableDictionary *thisServiceToProcess = [servicesToProcess objectForKey:characteristic.service.UUID];
+    NSMutableDictionary *thisCharaToProcess = [thisServiceToProcess objectForKey:characteristic.UUID];
+
+    for (CBDescriptor *descriptor in characteristic.descriptors) {
+//        NSLog(@"Reading descriptor value for %@", descriptor);
+        [thisCharaToProcess setObject:descriptor.UUID forKey:descriptor.UUID];
+        [peripheral readValueForDescriptor:descriptor];
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForDescriptor:(CBDescriptor *)descriptor error:(NSError *)error {
+    NSLog(@"didUpdateValueForDescriptor: %@", descriptor);
+
+    NSString *peripheralUUIDString = [peripheral uuidAsString];
+    NSMutableDictionary *servicesToProcess = [connectCallbackLatches valueForKey:peripheralUUIDString];
+    NSMutableDictionary *thisServiceToProcess = [servicesToProcess objectForKey:descriptor.characteristic.service.UUID];
+    NSMutableDictionary *thisCharaToProcess = [thisServiceToProcess objectForKey:descriptor.characteristic.UUID];
+
+    // remove the UUID of this desc to remember we already read it
+    [thisCharaToProcess removeObjectForKey:descriptor.UUID];
+
+    if ([thisCharaToProcess count] > 0) {
+        return;
+    }
+    NSLog(@"Finished reading of all descriptors for characteristic %@", descriptor.characteristic.UUID);
+    [thisServiceToProcess removeObjectForKey:descriptor.characteristic.UUID];
+
+    if ([thisServiceToProcess count] > 0) {
+        return;
+    }
+    NSLog(@"Finished reading of all characteristics for service %@", descriptor.characteristic.service.UUID);
+    [servicesToProcess removeObjectForKey:descriptor.characteristic.service.UUID];
+
+    if ([servicesToProcess count] > 0) {
+        return;
+    }
+
+    NSLog(@"All the services, characteristics and descriptors have been discovered, returning the connect callback");
+
+     // Call success callback for connect
+    NSString *connectCallbackId = [connectCallbacks valueForKey:peripheralUUIDString];
+    if (connectCallbackId) {
+        CDVPluginResult *pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsDictionary:[peripheral asDictionary]];
+        [pluginResult setKeepCallbackAsBool:TRUE];
+        [self.commandDelegate sendPluginResult:pluginResult callbackId:connectCallbackId];
+    }
+    [connectCallbackLatches removeObjectForKey:peripheralUUIDString];
+}
+
+
 - (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-    NSLog(@"didUpdateValueForCharacteristic");
+//    NSLog(@"didUpdateValueForCharacteristic");
 
     NSString *key = [self keyForPeripheral: peripheral andCharacteristic:characteristic];
     NSString *notifyCallbackId = [notificationCallbacks objectForKey:key];

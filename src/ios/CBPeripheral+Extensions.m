@@ -178,6 +178,26 @@ static NSDictionary *dataToArrayBuffer(NSData* data) {
     return result;
 }
 
+// arx: inspired by https://github.com/randdusing/cordova-plugin-bluetoothle/blob/master/src/ios/BluetoothLePlugin.m#L3360
+// iOS returns the descriptor as a string, as a number or as data. We only use ArrayBuffer on the JS side tho
+-(void) addValueForDescriptor:(CBDescriptor *) descriptor toDictionary:(NSMutableDictionary *) obj {
+  if ([descriptor.value isKindOfClass:[NSString class]]) {
+      // strings need to be converted to NSData and then to ArrayBuffer as that's what we use in JS and in Android
+      NSData *valueAsData = [descriptor.value dataUsingEncoding:NSUTF8StringEncoding];
+      [obj setValue:dataToArrayBuffer(valueAsData) forKey:@"value"];
+  } else if ([descriptor.value isKindOfClass:[NSNumber class]]) {
+      // @note: this is untested as we don't use these NSNumber type descriptors (what are they anyway?) But hopefully works
+//      NSNumber *valueCopy = descriptor.value;
+//      NSData *valueAsData = [NSData dataWithBytes:&valueCopy length:sizeof(valueCopy)];
+//      [obj setValue:dataToArrayBuffer(valueAsData) forKey:@"value"];
+      // @todo: this might turn to be a problem, but as it is the number directly, not ArrayBuffer, but we don't use it so it's hard to debug
+      [obj setValue:descriptor.value forKey:@"value"];
+  } else {
+      // everything else goes to ArrayBuffer
+      [obj setObject:dataToArrayBuffer(descriptor.value) forKey:@"value"];
+  }
+}
+
 // Put the service, characteristic, and descriptor data in a format that will serialize through JSON
 // sending a list of services and a list of characteristics
 - (void) serviceAndCharacteristicInfo: (NSMutableDictionary *) info {
@@ -207,9 +227,10 @@ static NSDictionary *dataToArrayBuffer(NSData* data) {
             NSMutableArray *descriptorList = [NSMutableArray new];
             for (CBDescriptor *descriptor in characteristic.descriptors) {
                 NSMutableDictionary *descriptorDictionary = [NSMutableDictionary new];
-                [descriptorDictionary setObject:[[descriptor UUID] UUIDString] forKey:@"descriptor"];
-                if ([descriptor value]) { // should always have a value?
-                    [descriptorDictionary setObject:[descriptor value] forKey:@"value"];
+                [descriptorDictionary setObject:[[descriptor UUID] UUIDString] forKey:@"uuid"];
+                if ([descriptor value]) { // should always have a value as we read it before
+                    // iOS can return the value as NSString, NSNumber or NSData. We need to connvert it to ArrayBuffer used in JS
+                    [self addValueForDescriptor:descriptor toDictionary:descriptorDictionary];
                 }
                 [descriptorList addObject:descriptorDictionary];
             }
