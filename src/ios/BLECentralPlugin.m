@@ -559,7 +559,7 @@
     [connectCallbackLatches setObject:servicesToProcess forKey:[peripheral uuidAsString]];
 
     for (CBService *service in peripheral.services) {
-        [servicesToProcess setObject:[NSMutableDictionary dictionary] forKey: service.UUID];
+        // @note: do not add this service to servicesToProcess yet, because if it doesn't have any characteristics, we don't have to process it
         [peripheral discoverCharacteristics:nil forService:service]; // discover all is slow
     }
 }
@@ -567,9 +567,11 @@
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
     NSLog(@"didDiscoverCharacteristicsForService");
 
+    // so this service has characteristics - we need to process it, so add it to servicesToProcess in callback latches
     NSString *peripheralUUIDString = [peripheral uuidAsString];
     NSMutableDictionary *servicesToProcess = [connectCallbackLatches valueForKey:peripheralUUIDString];
-    NSMutableDictionary *thisServiceToProcess = [servicesToProcess objectForKey:service.UUID];
+    NSMutableDictionary *thisServiceToProcess = [NSMutableDictionary dictionary];
+    [servicesToProcess setObject:thisServiceToProcess forKey: service.UUID];
 
     NSLog(@"Found characteristics for service %@", service);
     for (CBCharacteristic *characteristic in service.characteristics) {
@@ -580,12 +582,26 @@
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didDiscoverDescriptorsForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
-    NSLog(@"didDiscoverDescriptorsForCharacteristicc %@", characteristic);
+    NSLog(@"didDiscoverDescriptorsForCharacteristic %@", characteristic);
     NSLog(@"Descriptors: %@", characteristic.descriptors);
 
     NSString *peripheralUUIDString = [peripheral uuidAsString];
     NSMutableDictionary *servicesToProcess = [connectCallbackLatches valueForKey:peripheralUUIDString];
     NSMutableDictionary *thisServiceToProcess = [servicesToProcess objectForKey:characteristic.service.UUID];
+
+    // no descriptors for characteristic = remove it from callback latches
+    if ([characteristic.descriptors count] == 0) {
+        [thisServiceToProcess removeObjectForKey:characteristic.UUID];
+
+        // no more charas to process in this service? remove the service itself from callback latches. This also occurs if service has
+        // just charas without any descriptors
+        if ([thisServiceToProcess count] == 0) {
+            [servicesToProcess removeObjectForKey:characteristic.service.UUID];
+        }
+        return;
+    }
+
+    // so this characteristic has descriptors - let's at them to callback latches and read them all
     NSMutableDictionary *thisCharaToProcess = [thisServiceToProcess objectForKey:characteristic.UUID];
 
     for (CBDescriptor *descriptor in characteristic.descriptors) {
@@ -617,6 +633,7 @@
     }
     NSLog(@"Finished reading of all characteristics for service %@", descriptor.characteristic.service.UUID);
     [servicesToProcess removeObjectForKey:descriptor.characteristic.service.UUID];
+    // NSLog(@"servicesToProcess: %@", servicesToProcess);
 
     if ([servicesToProcess count] > 0) {
         return;
