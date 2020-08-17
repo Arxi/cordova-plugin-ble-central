@@ -81,6 +81,12 @@
         </js-module>
     </platform>
 
+    <platform name="electron">
+        <js-module src="src/electron/BLECentralPlugin.js" name="BLECentralPlugin">
+            <runs />
+        </js-module>
+    </platform>
+
     <platform name="wp8">
         <config-file target="config.xml" parent="/*">
             <feature name="BLE">
